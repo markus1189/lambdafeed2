@@ -5,6 +5,7 @@
 #! nix-shell --pure
 {-# LANGUAGE TypeApplications #-}
 
+import           Brick
 import           Control.Concurrent (threadDelay)
 import           Control.Concurrent.Async (Async, async, wait)
 import           Control.Concurrent.QSem
@@ -26,20 +27,19 @@ import qualified Text.Feed.Import as FeedImport
 import qualified Text.Feed.Query as FeedQuery
 import           Text.Feed.Types (Feed)
 
-import LambdaFeed
+import           LambdaFeed
 
 main :: IO ()
 main = do
-  asyncs <- parFor 5 urls $ \url -> do
-    feedResult <- download url
-    case feedResult of
-      Left e -> putStrLn e
-      Right feed -> do
-        TIO.putStrLn (FeedQuery.getFeedTitle feed)
-        print (FeedQuery.getFeedHome feed)
-        print (length $ FeedQuery.getFeedItems feed)
-        -- print (map (FeedQuery.getItemPublishDate @UTCTime) (FeedQuery.getFeedItems feed))
-  for_ asyncs wait
+  let app = App { appDraw = \s -> []
+                , appChooseCursor = \s -> \cursors -> Nothing
+                , appHandleEvent = \s -> \be -> _handle
+                , appStartEvent = \s -> _start
+                , appAttrMap = \s -> _attrmap
+                }
+      initialState = ()
+  finalState <- defaultMain app initialState
+  return ()
 
 urls = ["https://www.reddit.com/r/haskell/.rss"
        ,"https://www.reddit.com/r/scala/.rss"
