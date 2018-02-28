@@ -24,12 +24,15 @@ executable lambdafeed2
                      , abstract-par
                      , async
                      , brick
+                     , data-default
                      , feed
                      , lens
                      , monad-par
                      , stm
                      , text
                      , time >=1.8 && <1.9
+                     , vector
+                     , vty
                      , wreq
   -- hs-source-dirs:      
   default-language:    Haskell2010
