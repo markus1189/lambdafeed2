@@ -48,18 +48,27 @@ myApp :: Brick.App State CustomEvents Names
 myApp = Brick.App { Brick.appDraw = \(State _ items) -> [drawListWidget items]
                   , Brick.appChooseCursor = Brick.showFirstCursor
                   , Brick.appHandleEvent = eventHandler
-                  , Brick.appStartEvent = \s@(State chan _) -> do
-                      liftIO $ Brick.BChan.writeBChan chan FetchFeeds
-                      return s
-                  , Brick.appAttrMap = const $ Brick.attrMap Graphics.Vty.defAttr [(Brick.attrName "foo", Brick.Util.bg Graphics.Vty.blue)]
+                  , Brick.appStartEvent = startApp
+                  , Brick.appAttrMap = const $ myAttrMap
                   }
-  where drawListWidget = Brick.Widgets.Core.viewport ItemListViewport Brick.Types.Vertical . Brick.Widgets.Core.vLimit 10 . Brick.Widgets.List.renderList
-                       (\_ -> \item -> Brick.Widgets.Core.str (show (FeedQuery.getItemTitle item))) True
+
+drawListWidget = Brick.Widgets.Core.viewport ItemListViewport Brick.Types.Vertical
+                 . Brick.Widgets.Core.vLimit 10
+                 . Brick.Widgets.List.renderList renderListItem True
+
+renderListItem focused item = Brick.Widgets.Core.str (show (FeedQuery.getItemTitle item))
+
+startApp s@(State chan _) = do
+  liftIO $ Brick.BChan.writeBChan chan FetchFeeds
+  return s
+
+myAttrMap = Brick.attrMap Graphics.Vty.defAttr []
 
 eventHandler (State chan _) (Brick.AppEvent FetchFeeds) = do
   asyncFeeds <- liftIO downloadFeeds
-  feedItems <- (\is -> Brick.Widgets.List.list ItemListName (Data.Vector.fromList is) 1) . concat <$> (liftIO $ for asyncFeeds wait)
+  feedItems <- mkList . concat <$> (liftIO $ for asyncFeeds wait)
   Brick.continue (State chan feedItems)
+  where mkList is = Brick.Widgets.List.list ItemListName (Data.Vector.fromList is) 1
 
 eventHandler s@(State chan list) ev@(Brick.Types.VtyEvent e) = case e of
   Graphics.Vty.EvKey Graphics.Vty.KEsc [] -> Brick.halt s
