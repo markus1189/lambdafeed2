@@ -20,7 +20,7 @@ import           Control.Concurrent.STM.TBQueue (TBQueue, newTBQueue, writeTBQue
 import           Control.Exception.Base (bracket_, finally, try, SomeException)
 import           Control.Lens
 import           Control.Monad (when, forever, replicateM_)
-import           Control.Monad.IO.Class (liftIO)
+import           Control.Monad.IO.Class (liftIO, MonadIO(..))
 import qualified Control.Monad.Par.Class as Par
 import           Control.Monad.Par.IO (runParIO)
 import qualified Data.Default
@@ -36,15 +36,15 @@ import qualified Text.Feed.Import as FeedImport
 import qualified Text.Feed.Query as FeedQuery
 import           Text.Feed.Types (Feed, Item)
 
+import           Events (Event(..), Command(..), CustomEvent(..))
+import qualified Events as Events
 import           LambdaFeed
 
 data Names = ItemListName | ItemListViewport deriving (Show, Eq, Ord)
 
-data State = State (Brick.BChan.BChan CustomEvents) (Brick.Widgets.List.List Names Item)
+data State = State (Brick.BChan.BChan CustomEvent) (Brick.Widgets.List.List Names Item)
 
-data CustomEvents = FetchFeeds
-
-myApp :: Brick.App State CustomEvents Names
+myApp :: Brick.App State CustomEvent Names
 myApp = Brick.App { Brick.appDraw = \(State _ items) -> [drawListWidget items]
                   , Brick.appChooseCursor = Brick.showFirstCursor
                   , Brick.appHandleEvent = eventHandler
@@ -52,82 +52,68 @@ myApp = Brick.App { Brick.appDraw = \(State _ items) -> [drawListWidget items]
                   , Brick.appAttrMap = const $ myAttrMap
                   }
 
+drawListWidget :: Brick.Widgets.List.List Names Item -> Brick.Types.Widget Names
 drawListWidget = Brick.Widgets.Core.viewport ItemListViewport Brick.Types.Vertical
-                 . Brick.Widgets.Core.vLimit 10
+                 . Brick.Widgets.Core.vLimit 20
                  . Brick.Widgets.List.renderList renderListItem True
 
-renderListItem focused item = Brick.Widgets.Core.str (show (FeedQuery.getItemTitle item))
+renderListItem :: p -> Item -> Brick.Types.Widget n
+renderListItem _ item = Brick.Widgets.Core.str (show (FeedQuery.getItemTitle item))
 
+startApp :: MonadIO m => State -> m State
 startApp s@(State chan _) = do
-  liftIO $ Brick.BChan.writeBChan chan FetchFeeds
+  liftIO $ Brick.BChan.writeBChan chan Events.fetchFeeds
   return s
 
+myAttrMap :: Brick.AttrMap
 myAttrMap = Brick.attrMap Graphics.Vty.defAttr []
 
-eventHandler (State chan _) (Brick.AppEvent FetchFeeds) = do
-  asyncFeeds <- liftIO downloadFeeds
-  feedItems <- mkList . concat <$> (liftIO $ for asyncFeeds wait)
-  Brick.continue (State chan feedItems)
-  where mkList is = Brick.Widgets.List.list ItemListName (Data.Vector.fromList is) 1
+eventHandler :: State -> Brick.Types.BrickEvent n CustomEvent -> Brick.Types.EventM Names (Brick.Types.Next State)
+eventHandler s (Brick.AppEvent (UserCommand userCmd)) = handleUserCommand s userCmd
+eventHandler s (Brick.AppEvent (UserEvent userEvt)) = handleUserEvent s userEvt
+eventHandler s (Brick.Types.VtyEvent vtyEvent) = handleVtyEvent s vtyEvent
 
-eventHandler s@(State chan list) ev@(Brick.Types.VtyEvent e) = case e of
+handleVtyEvent :: State -> Graphics.Vty.Event -> Brick.Types.EventM Names (Brick.Types.Next State)
+handleVtyEvent s@(State chan list) e = case e of
   Graphics.Vty.EvKey Graphics.Vty.KEsc [] -> Brick.halt s
   _ -> do
     newList <- Brick.Widgets.List.handleListEvent e list
     Brick.continue (State chan newList)
 
-downloadFeeds = parFor 10 urls $ \url -> do
+handleUserCommand :: State -> Command -> Brick.Types.EventM Names (Brick.Types.Next State)
+handleUserCommand (State chan _) FetchFeeds = handleFetchFeeds chan
+
+handleFetchFeeds :: Brick.BChan.BChan CustomEvent -> Brick.Types.EventM n (Brick.Types.Next State)
+handleFetchFeeds chan = do
+  asyncFeeds <- liftIO downloadFeeds
+  feedItems <- mkList . concat <$> liftIO (for asyncFeeds wait)
+  Brick.continue (State chan feedItems)
+  where
+    mkList is = Brick.Widgets.List.list ItemListName (Data.Vector.fromList is) 1
+
+handleUserEvent :: State -> Event -> Brick.Types.EventM Names (Brick.Types.Next State)
+handleUserEvent = undefined
+
+downloadFeeds :: IO [Async [Item]]
+downloadFeeds = do
+  urls <- readUrls
+  parFor 10 urls $ \url -> do
     eitherFeed <- try @SomeException $ downloadFeedFromUrl url
     return $ case eitherFeed of
-      Left e -> []
-      Right (Left e) -> []
+      Left _ -> []
+      Right (Left _) -> []
       Right (Right feed) -> FeedQuery.getFeedItems feed
 
 main :: IO ()
 main = do
   eventChan <- Brick.BChan.newBChan 10
   let initialState = State eventChan (Brick.Widgets.List.list ItemListName [] 1)
-  finalState <- Brick.customMain
+  _ <- Brick.customMain
                   (Graphics.Vty.mkVty Graphics.Vty.defaultConfig)
                   (Just eventChan)
                   myApp
                   initialState
   return ()
 
-urls :: [String]
-urls = ["https://www.reddit.com/r/haskell/.rss"
-       ,"https://www.reddit.com/r/scala/.rss"
-       ,"https://www.reddit.com/r/notebooks/.rss"
-       ,"https://www.reddit.com/r/fantasy/.rss"
-       ,"https://mathwithbaddrawings.com/feed"
-       ,"http://blog.kubernetes.io/feedItems/posts/default"
-       ,"https://photographylife.com/feed"
-       ,"http://calnewport.com/blog/feed"
-       ,"http://www.beyondthelines.net/feed/"
-       ,"http://waitbutwhy.com/feed"
-       ,"https://failex.blogspot.com/feedItems/posts/default"
-       ,"https://thegeocachingjunkie.com/feed/"
-       ,"https://www.geocaching.com/blog/feed/"
-       ,"http://www.locusmap.eu/feed/"
-       ,"http://nixos.org/blogs.xml"
-       ,"https://www.reddit.com/r/NixOS/.rss"
-       ,"http://www.drmaciver.com/blog/feed/"
-       ,"https://feedItems.feedburner.com/datastax"
-       ,"http://www.lihaoyi.com/feed.xml"
-       ,"http://feedItems.feedburner.com/incodeblog"
-       ,"http://www.martinseeler.com/feed.xml"
-       ,"http://www.gridsagegames.com/blog/feed/"
-       ,"http://news.ycombinator.com/rss"
-       ,"http://www.reddit.com/message/inbox/.rss?feed=ad7158bdbfcb759e26c91793741895526fcd6781&user=markus1189"
-       ,"http://www.reddit.com/r/haskell/.rss"
-       ,"https://typesandkinds.wordpress.com/feed/"
-       ,"http://www.reddit.com/r/emacs/.rss"
-       ,"http://www.reddit.com/r/commandline/.rss"
-       ,"http://www.reddit.com/r/geocaching/.rss"
-       ,"http://www.reddit.com/r/compsci/.rss"
-       ,"http://www.reddit.com/r/geb/.rss"
-       ,"http://www.reddit.com/r/notebooks/.rss"
-       ,"https://www.reddit.com/r/journalingisart/.rss"
-       ,"http://www.jetpens.com/blog/feed"
-       ,"http://feedItems.feedburner.com/BlackCover"
-       ]
+readUrls :: IO [String]
+readUrls = lines <$> readFile "urls"
